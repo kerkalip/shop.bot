@@ -19,7 +19,7 @@ t = threading.Thread(target=run_flask)
 t.start()
 
 # --- ២. កូដ Telegram Bot របស់បង ---
-TOKEN = 'ដាក់_BOT_TOKEN_របស់បងនៅទីនេះ'
+TOKEN = '8654200136:AAGTEmmg3Rb5Z36aGlGrn1j3-36JwzsU-Gs'
 bot = telebot.TeleBot(TOKEN)
 
 # (ដាក់កូដ @bot.message_handler ផ្សេងៗរបស់បងនៅកន្លែងនេះ...)
