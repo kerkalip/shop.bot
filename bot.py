@@ -1,34 +1,64 @@
-import telebot
+iimport telebot
 from telebot import types
 
 TOKEN = '8654200136:AAGTEmmg3Rb5Z36aGlGrn1j3-36JwzsU-Gs'
 bot = telebot.TeleBot(TOKEN)
 
-# ពេលគេចុច /start ឱ្យចេញ Menu ចុច
+# ១. ពេលចុច /start ឱ្យបង្ហាញ ប៊ូតុង/Menu
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     btn1 = types.KeyboardButton('👤 គណនីរបស់ខ្ញុំ')
     btn2 = types.KeyboardButton('💳 បញ្ចូលលុយ')
-    btn3 = types.KeyboardButton('🛒 ទិញ Account Blox Fruit')
+    btn3 = types.KeyboardButton('🛒 ទិញ Account')
     btn4 = types.KeyboardButton('🆘 រាយការណ៍/ទាក់ទង Admin')
     markup.add(btn1, btn2, btn3, btn4)
     
-    bot.reply_to(message, "សូមស្វាគមន៍មកកាន់ Vieki Store! 🛒\nសូមជ្រើសរើសសេវាកម្មខាងក្រោម៖", reply_markup=markup)
+    bot.reply_to(
+        message, 
+        f"សួស្តី {message.from_user.first_name}! 🛒\nសូមស្វាគមន៍មកកាន់ Vieki Store!\nសូមជ្រើសរើសMenuខាងក្រោម៖", 
+        reply_markup=markup
+    )
 
-# ចាប់យកសារពេលគេចុចលើ Button នីមួយៗ
+# ២. ចាប់យកពាក្យដែលគេចុច ដើម្បីឆ្លើយតបឱ្យត្រូវ
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    if message.text == '👤 គណនីរបស់ខ្ញុំ':
-        bot.reply_to(message, f"👤 ឈ្មោះ៖ {message.from_user.first_name}\nID: {message.from_user.id}\nតុល្យភាព៖ $0.00")
-    elif message.text == '💳 បញ្ចូលលុយ':
-        bot.reply_to(message, "សូមផ្ញើរូបភាពវិក្កយបត្រ ABA ដើម្បីបញ្ចូលទឹកប្រាក់...")
-    elif message.text == '🛒 ទិញ Account Blox Fruit':
-        bot.reply_to(message, "📦 Account ដែលមានស្ដុក៖\n1. Blox Fruit Lv MAX + Cursed Dual Katana ($5)")
-    elif message.text == '🆘 រាយការណ៍/ទាក់ទង Admin':
-        bot.reply_to(message, "📞 ទាក់ទង Admin ផ្ទាល់៖ @your_admin_username")
+def handle_menu(message):
+    text = message.text
+
+    if 'គណនីរបស់ខ្ញុំ' in text:
+        bot.reply_to(
+            message, 
+            f"👤 **ព័ត៌មានគណនី**\n"
+            f"• ឈ្មោះ៖ {message.from_user.first_name}\n"
+            f"• Telegram ID: `{message.from_user.id}`\n"
+            f"• តុល្យភាព៖ **$0.00**",
+            parse_mode='Markdown'
+        )
+    elif 'បញ្ចូលលុយ' in text:
+        bot.reply_to(
+            message, 
+            "💳 **វិធីបញ្ចូលទឹកប្រាក់**\n\n"
+            "សូមផ្ញើប្រាក់មកកាន់ ABA៖ `123 456 789` (Vieki Store)\n"
+            "រួចផ្ញើរូបភាពវិក្កយបត្រ (Receipt) មកកាន់ទីនេះ!",
+            parse_mode='Markdown'
+        )
+    elif 'ទិញ Account' in text:
+        bot.reply_to(
+            message, 
+            "📦 **បញ្ជី Account ក្នុងស្តុក៖**\n\n"
+            "1. Blox Fruit Lv MAX + CDK - **$5.00**\n"
+            "2. Blox Fruit Godhuman + Dough V2 - **$8.00**\n\n"
+            "_(ទាក់ទង Admin ដើម្បីបញ្ជាទិញ)_"
+        )
+    elif 'រាយការណ៍' in text or 'Admin' in text:
+        bot.reply_to(
+            message, 
+            "🆘 **ផ្នែកជំនួយ / ទំនាក់ទំនង Admin**\n\n"
+            "បើមានបញ្ហា ឬចង់ទិញ Account ផ្ទាល់ សូមទាក់ទង៖\n"
+            "👉 Admin: @your_admin_username"
+        )
     else:
-        bot.reply_to(message, f"អ្នកបានផ្ញើ៖ {message.text}")
+        bot.reply_to(message, "សូមជ្រើសរើស Menu ខាងក្រោម ឬវាយ /start ឡើងវិញ!")
 
 print("Bot is starting...")
 bot.infinity_polling(skip_pending=True)
