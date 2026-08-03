@@ -10,11 +10,26 @@ from telebot import types
 # 1. CONFIGURATIONS (Environment Variables)
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8654200136:AAGTEmmg3Rb5Z36aGlGrn1j3-36JwzsU-Gs")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6872141480"))
+
+# កំណត់ List ADMIN_IDS សម្រាប់ Admin ទាំង ២ នាក់
+admin_env = os.getenv("ADMIN_ID", "6872141480, 987654321")
+ADMIN_IDS = [int(i.strip()) for i in admin_env.split(",") if i.strip().isdigit()]
+
 COOLDOWN_TIME = 15 * 60  # 15 minutes Anti-Spam
 
 bot = telebot.TeleBot(BOT_TOKEN)
 DB_PATH = 'shop_bot.db'
+
+# Helper Function សម្រាប់ផ្ញើសារទៅកាន់ Admin ទាំងអស់
+def notify_all_admins(text=None, photo_id=None, reply_markup=None):
+    for admin_id in ADMIN_IDS:
+        try:
+            if photo_id:
+                bot.send_photo(admin_id, photo_id, caption=text, parse_mode="Markdown", reply_markup=reply_markup)
+            else:
+                bot.send_message(admin_id, text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception:
+            pass
 
 # ==========================================
 # 2. DATABASE SETUP & BACKUP SYSTEM
@@ -266,10 +281,8 @@ def process_report_to_admin(message):
     user_name = message.from_user.first_name
     report_text = message.text
 
-    bot.send_message(
-        ADMIN_ID,
-        f"📩 **មានសាររាយការណ៍/ទាក់ទងពី Customer!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 ID: `{user_id}`\n💬 សារ: {report_text}",
-        parse_mode="Markdown"
+    notify_all_admins(
+        f"📩 **មានសាររាយការណ៍/ទាក់ទងពី Customer!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 ID: `{user_id}`\n💬 សារ: {report_text}"
     )
     bot.send_message(message.chat.id, "✅ **បានផ្ញើសារទៅកាន់ Admin រួចរាល់!**\nAdmin នឹងពិនិត្យ និងឆ្លើយតបជូនលោកអ្នកឆាប់ៗ។")
 
@@ -314,11 +327,9 @@ def process_slip_upload(message):
         types.InlineKeyboardButton("❌ បដិសេធ (Reject)", callback_data=f"rej_topup_{user_id}")
     )
 
-    bot.send_photo(
-        ADMIN_ID,
-        photo_id,
-        caption=f"📥 **មានសំណើបញ្ចូលលុយថ្មី!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 User ID: `{user_id}`",
-        parse_mode="Markdown",
+    notify_all_admins(
+        text=f"📥 **មានសំណើបញ្ចូលលុយថ្មី!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 User ID: `{user_id}`",
+        photo_id=photo_id,
         reply_markup=markup
     )
     bot.send_message(message.chat.id, "✅ **បានផ្ញើ Slip រួចរាល់!**\nសូមរង់ចាំ Admin ពិនិត្យ។")
@@ -344,8 +355,6 @@ def send_catalog_menu(chat_id):
 # ==========================================
 # 5. ITEM DETAILS, CONFIRMATION & BUY SYSTEM
 # ==========================================
-
-# 1. បង្ហាញព័ត៌មានទំនិញ + ប៊ូតុង "ទិញ" និង "ត្រឡប់ក្រោយ"
 @bot.callback_query_handler(func=lambda call: call.data.startswith('view_cat_'))
 def view_category_details(call):
     cat_id = int(call.data.split('_')[2])
@@ -368,9 +377,7 @@ def view_category_details(call):
         text += f"📝 **ព័ត៌មានបន្ថែម៖** {desc}\n"
 
     markup = types.InlineKeyboardMarkup()
-    # ចុចទៅកាន់ដំណាក់កាល Ask Confirmation
     markup.add(types.InlineKeyboardButton("🛒 ទិញឥឡូវនេះ", callback_data=f"ask_buy_{cat_id}"))
-    # ប៊ូតុងត្រឡប់ក្រោយទៅកាន់ Catalog Menu
     markup.add(types.InlineKeyboardButton("🔙 ត្រឡប់ក្រោយ", callback_data="back_to_catalog"))
 
     try:
@@ -383,7 +390,6 @@ def view_category_details(call):
     else:
         bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
-# 2. ប៊ូតុងត្រឡប់ក្រោយទៅ Menu ទំនិញដើម
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_catalog")
 def back_catalog(call):
     try:
@@ -392,7 +398,6 @@ def back_catalog(call):
         pass
     send_catalog_menu(call.message.chat.id)
 
-# 3. ដំណាក់កាលសួរបញ្ជាក់ (Confirm Step - លើកទី ២)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('ask_buy_'))
 def ask_buy_confirmation(call):
     cat_id = int(call.data.split('_')[2])
@@ -420,9 +425,7 @@ def ask_buy_confirmation(call):
     text += "តើអ្នកប្រាកដជាចង់ទិញអាខោននេះមែនទេ?"
 
     markup = types.InlineKeyboardMarkup()
-    # ប៊ូតុងបញ្ជាក់ទិញផ្តាច់ព្រ័ត្រ
     markup.add(types.InlineKeyboardButton("✅ ប្រាកដហើយ (ទិញ)", callback_data=f"confirm_buy_{cat_id}"))
-    # ប៊ូតុងបោះបង់ / ត្រឡប់ក្រោយទៅមើលព័ត៌មានទំនិញវិញ
     markup.add(types.InlineKeyboardButton("❌ បោះបង់ / ត្រឡប់ក្រោយ", callback_data=f"view_cat_{cat_id}"))
 
     try:
@@ -432,7 +435,6 @@ def ask_buy_confirmation(call):
 
     bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
-# 4. ការទាត់កាត់លុយ និងប្រគល់ទំនិញ (Final Buy Execution)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_buy_'))
 def handle_final_purchase(call):
     cat_id = int(call.data.split('_')[2])
@@ -473,21 +475,17 @@ def handle_final_purchase(call):
         parse_mode="Markdown"
     )
 
-    try:
-        bot.send_message(
-            ADMIN_ID,
-            f"🔔 **[REAL-TIME ALERT] មានការទិញអាខោនថ្មី!**\n\n👤 អ្នកទិញ: {user_name}\n🆔 User ID: `{user_id}`\n📦 ប្រភេទ: {name}\n💵 តម្លៃ: ${price:.2f}\n🔑 លេខកូដ: `{item_data}`",
-            parse_mode="Markdown"
-        )
-    except Exception:
-        pass
+    # ផ្ញើ Notification ទៅកាន់ Admin ទាំង ២ នាក់
+    notify_all_admins(
+        f"🔔 **[REAL-TIME ALERT] មានការទិញអាខោនថ្មី!**\n\n👤 អ្នកទិញ: {user_name}\n🆔 User ID: `{user_id}`\n📦 ប្រភេទ: {name}\n💵 តម្លៃ: ${price:.2f}\n🔑 លេខកូដ: `{item_data}`"
+    )
 
 # ==========================================
 # 6. ADMIN PANEL & MANAGEMENT
 # ==========================================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in ADMIN_IDS:
         return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -514,7 +512,7 @@ def admin_panel(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_download_db")
 def send_database_backup(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
     try:
         with open(DB_PATH, 'rb') as doc:
@@ -529,7 +527,7 @@ def send_database_backup(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_edit_menu")
 def admin_edit_menu_options(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
 
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -547,7 +545,7 @@ def admin_edit_menu_options(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('setkey_'))
 def handle_setkey_prompt(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
 
     key_name = call.data.replace('setkey_', '')
@@ -567,7 +565,7 @@ def process_update_setting(message, key_name):
 
 @bot.callback_query_handler(func=lambda call: call.data == "setqr_topup_qr")
 def handle_setqr_prompt(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
 
     msg = bot.send_message(
@@ -588,7 +586,7 @@ def process_update_qr(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(('app_topup_', 'rej_topup_')))
 def handle_slip_approval(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
 
     action = call.data.split('_')[0]
@@ -615,7 +613,7 @@ def process_approve_amount(message, target_user):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
 def handle_admin_actions(call):
-    if call.from_user.id != ADMIN_ID:
+    if call.from_user.id not in ADMIN_IDS:
         return
 
     if call.data == "adm_add_cat":
