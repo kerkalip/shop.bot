@@ -2,25 +2,49 @@ import os
 import sqlite3
 import shutil
 import time
+import threading
 from datetime import datetime
+import requests
+from flask import Flask
 import telebot
 from telebot import types
+from khqr import KHQR
 
 # ==========================================
-# 1. CONFIGURATIONS (Environment Variables)
+# 1. CONFIGURATIONS
 # ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8654200136:AAGTEmmg3Rb5Z36aGlGrn1j3-36JwzsU-Gs")
 
-# កំណត់ List ADMIN_IDS សម្រាប់ Admin ទាំង ២ នាក់
+# កំណត់ ID Admin ទាំង ២ នាក់
 admin_env = os.getenv("ADMIN_ID", "6872141480, 987654321")
 ADMIN_IDS = [int(i.strip()) for i in admin_env.split(",") if i.strip().isdigit()]
 
-COOLDOWN_TIME = 15 * 60  # 15 minutes Anti-Spam
+# Bakong Developer API Settings
+BAKONG_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMWQwM2I1Mzk5NTE5NDFjNiJ9LCJpYXQiOjE3ODYxMTg0MzksImV4cCI6MTc5Mzg5NDQzOX0.E-RpooCYoToWWsrmPbcgv4pDqPHQk6dGJVrlMu9yjS8"
+BAKONG_ACCOUNT_ID = os.getenv("BAKONG_ACCOUNT_ID", "your_account@aba")  # ឧ. sokha@aba ឬ 85512345678@vattana
+MERCHANT_NAME = "Vieki Store"
+MERCHANT_CITY = "Phnom Penh"
 
+khqr_instance = KHQR()
 bot = telebot.TeleBot(BOT_TOKEN)
 DB_PATH = 'shop_bot.db'
 
-# Helper Function សម្រាប់ផ្ញើសារទៅកាន់ Admin ទាំងអស់
+# ==========================================
+# 2. DUMMY WEB SERVER FOR RENDER (Keep-Alive)
+# ==========================================
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Vieki Store Bot is Alive & Running!"
+
+def run_web_server():
+    port = int(os.getenv("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 3. HELPER FUNCTIONS & NOTIFICATIONS
+# ==========================================
 def notify_all_admins(text=None, photo_id=None, reply_markup=None):
     for admin_id in ADMIN_IDS:
         try:
@@ -32,7 +56,7 @@ def notify_all_admins(text=None, photo_id=None, reply_markup=None):
             pass
 
 # ==========================================
-# 2. DATABASE SETUP & BACKUP SYSTEM
+# 4. DATABASE SETUP
 # ==========================================
 def db_connect():
     return sqlite3.connect(DB_PATH, timeout=20)
@@ -41,14 +65,11 @@ def init_db():
     with db_connect() as conn:
         cursor = conn.cursor()
         
-        # Users Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 0.0,
-            last_topup_time INTEGER DEFAULT 0
+            balance REAL DEFAULT 0.0
         )''')
         
-        # Categories Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
@@ -57,7 +78,6 @@ def init_db():
             photo_id TEXT
         )''')
         
-        # Stock Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category_name TEXT NOT NULL,
@@ -65,7 +85,6 @@ def init_db():
             is_sold INTEGER DEFAULT 0
         )''')
         
-        # History Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -75,40 +94,34 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
 
-        # Settings Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )''')
 
-        # Default UI Values
+        # បញ្ជី Transaction MD5 ដែលបានបង់រួចដើម្បីកុំឱ្យបូកលុយស្ទួន (Prevent Double Topup)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS bakong_payments (
+            md5 TEXT PRIMARY KEY,
+            user_id INTEGER,
+            amount REAL,
+            status TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+
         defaults = [
             ('btn_buy', '🛒 ទិញអាខោន'),
             ('btn_profile', '👤 គណនីរបស់ខ្ញុំ'),
-            ('btn_topup', '💳 បញ្ចូលលុយ'),
+            ('btn_topup', '💳 បញ្ចូលលុយ (KHQR)'),
             ('btn_history', '📜 ប្រវត្តិរបស់ខ្ញុំ'),
             ('btn_support', '🆘 រាយការណ៍/ទាក់ទង Admin'),
-            ('welcome_msg', 'សួស្តី {first_name}!\nសូមស្វាគមន៍មកកាន់ហាងលក់អាខោន។'),
-            ('topup_msg', '💳 **ព័ត៌មានគណនីសម្រាប់បញ្ចូលលុយ**\n\n🏦 **ABA Bank:** `000 111 222` (NAME)\n\n📸 **សូមផ្ញើរូបថតចុងសន្លឹក (Slip ធនាគារ)** បន្ទាប់ពីវេលុយរួច៖'),
-            ('topup_qr', '')
+            ('welcome_msg', 'សួស្តី {first_name}!\nសូមស្វាគមន៍មកកាន់ Vieki Store។')
         ]
         for k, v in defaults:
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         conn.commit()
 
-def backup_database():
-    try:
-        now_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_filename = f"shop_bot_backup_{now_str}.db"
-        shutil.copyfile(DB_PATH, backup_filename)
-        print(f"✅ Backup successful: {backup_filename}")
-    except Exception as e:
-        print(f"❌ Backup failed: {e}")
-
 init_db()
-backup_database()
 
-# --- HELPER FUNCTIONS ---
 def get_setting(key, default=""):
     with db_connect() as conn:
         cursor = conn.cursor()
@@ -161,53 +174,61 @@ def get_stock_count(category_name):
         return cursor.fetchone()[0]
 
 def buy_account_item(user_id, category_name, price):
-    """Atomic stock check and purchase to prevent race conditions."""
     with db_connect() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, item_data FROM stock WHERE category_name = ? AND is_sold = 0 LIMIT 1",
-            (category_name,)
-        )
+        cursor.execute("SELECT id, item_data FROM stock WHERE category_name = ? AND is_sold = 0 LIMIT 1", (category_name,))
         item = cursor.fetchone()
         if not item:
             return None
 
         item_id, item_data = item
-        cursor.execute("UPDATE stock SET is_sold = 1 WHERE id = ? AND is_sold = 0", (item_id,))
-        if cursor.rowcount == 0:
-            return None
-
+        cursor.execute("UPDATE stock SET is_sold = 1 WHERE id = ?", (item_id,))
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, user_id))
         conn.commit()
 
     record_history(user_id, f"ទិញ {category_name}", -price, item_data)
     return item_data
 
-def check_topup_cooldown(user_id):
-    with db_connect() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT last_topup_time FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+# ==========================================
+# 5. BAKONG KHQR API INTEGRATION
+# ==========================================
+def generate_khqr_data(amount_usd):
+    try:
+        qr_data = khqr_instance.create_individual(
+            bakong_account_id=BAKONG_ACCOUNT_ID,
+            account_name=MERCHANT_NAME,
+            merchant_city=MERCHANT_CITY,
+            amount=float(amount_usd),
+            currency="USD",
+            store_label=MERCHANT_NAME,
+            terminal_label="TelegramBot"
+        )
+        qr_string = qr_data.get('data', {}).get('qr')
+        md5_hash = qr_data.get('data', {}).get('md5')
+        return qr_string, md5_hash
+    except Exception as e:
+        print(f"❌ Error Generating KHQR: {e}")
+        return None, None
 
-    current_time = int(time.time())
-    if not row or not row[0]:
-        return True, 0
-
-    elapsed = current_time - row[0]
-    if elapsed < COOLDOWN_TIME:
-        remaining_min = int((COOLDOWN_TIME - elapsed) // 60) + 1
-        return False, remaining_min
-
-    return True, 0
-
-def update_topup_time(user_id):
-    with db_connect() as conn:
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET last_topup_time = ? WHERE user_id = ?", (int(time.time()), user_id))
-        conn.commit()
+def check_bakong_transaction_md5(md5_hash):
+    url = "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5"
+    headers = {
+        'Authorization': f'Bearer {BAKONG_TOKEN}',
+        'Content-Type': 'application/json'
+    }
+    payload = {"md5": md5_hash}
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res_json = res.json()
+        if res_json.get("responseCode") == 0 and res_json.get("data"):
+            return True, res_json.get("data")
+        return False, None
+    except Exception as e:
+        print(f"❌ Bakong API Check Error: {e}")
+        return False, None
 
 # ==========================================
-# 3. Dynamic User Keyboard
+# 6. DYNAMIC KEYBOARD & USER HANDLERS
 # ==========================================
 def build_user_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -216,21 +237,16 @@ def build_user_keyboard():
         types.KeyboardButton(get_setting('btn_profile', '👤 គណនីរបស់ខ្ញុំ'))
     )
     markup.add(
-        types.KeyboardButton(get_setting('btn_topup', '💳 បញ្ចូលលុយ')),
+        types.KeyboardButton(get_setting('btn_topup', '💳 បញ្ចូលលុយ (KHQR)')),
         types.KeyboardButton(get_setting('btn_history', '📜 ប្រវត្តិរបស់ខ្ញុំ'))
     )
     markup.add(types.KeyboardButton(get_setting('btn_support', '🆘 រាយការណ៍/ទាក់ទង Admin')))
     return markup
 
-# ==========================================
-# 4. USER MENU HANDLERS
-# ==========================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    user_id = message.from_user.id
-    get_user_balance(user_id)
-    
-    welcome_template = get_setting('welcome_msg', 'សួស្តី {first_name}!\nសូមស្វាគមន៍មកកាន់ហាងលក់អាខោន។')
+    get_user_balance(message.from_user.id)
+    welcome_template = get_setting('welcome_msg', 'សួស្តី {first_name}!\nសូមស្វាគមន៍មកកាន់ Vieki Store។')
     welcome_text = welcome_template.format(first_name=message.from_user.first_name)
     bot.send_message(message.chat.id, welcome_text, reply_markup=build_user_keyboard())
 
@@ -242,11 +258,7 @@ def handle_buy_btn(message):
 def handle_profile_btn(message):
     user_id = message.from_user.id
     balance = get_user_balance(user_id)
-    bot.send_message(message.chat.id, f"🆔 ID របស់អ្នក: `{user_id}`\n💰 សមតុល្យលុយ: **${balance:.2f}**", parse_mode="Markdown")
-
-@bot.message_handler(func=lambda msg: msg.text == get_setting('btn_topup', '💳 បញ្ចូលលុយ'))
-def handle_topup_btn(message):
-    handle_topup_request(message)
+    bot.send_message(message.chat.id, f"🆔 **ID របស់អ្នក:** `{user_id}`\n💰 **សមតុល្យលុយ:** **${balance:.2f}**", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda msg: msg.text == get_setting('btn_history', '📜 ប្រវត្តិរបស់ខ្ញុំ'))
 def handle_history_btn(message):
@@ -260,13 +272,13 @@ def handle_history_btn(message):
         bot.send_message(message.chat.id, "មិនទាន់មានប្រវត្តិប្រតិបត្តិការនៅឡើយទេ។")
         return
 
-    text = "📜 **ប្រវត្តិប្រតិបត្តិការចុងក្រោយរបស់អ្នក (5 ដង):**\n\n"
+    text = "📜 **ប្រវត្តិប្រតិបត្តិការចុងក្រោយរបស់អ្នក:**\n\n"
     for action, amount, item_data, time_str in history:
         symbol = "🟢" if amount > 0 else "🔴"
         text += f"{symbol} **{action}** (${amount:.2f})\n"
         text += f"🕒 ពេល: `{time_str[:16]}`\n"
         if item_data:
-            text += f"🔑 **ទិន្នន័យអាខោន/លេខកូដ:** `{item_data}`\n"
+            text += f"🔑 **ទិន្នន័យ:** `{item_data}`\n"
         text += "-------------------------------\n"
 
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
@@ -277,63 +289,100 @@ def handle_support_btn(message):
     bot.register_next_step_handler(msg, process_report_to_admin)
 
 def process_report_to_admin(message):
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    report_text = message.text
+    notify_all_admins(f"📩 **សារពី Customer:**\n👤 អ្នកផ្ញើ: {message.from_user.first_name}\n🆔 ID: `{message.from_user.id}`\n💬 សារ: {message.text}")
+    bot.send_message(message.chat.id, "✅ **បានផ្ញើសារទៅកាន់ Admin រួចរាល់!**")
 
-    notify_all_admins(
-        f"📩 **មានសាររាយការណ៍/ទាក់ទងពី Customer!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 ID: `{user_id}`\n💬 សារ: {report_text}"
-    )
-    bot.send_message(message.chat.id, "✅ **បានផ្ញើសារទៅកាន់ Admin រួចរាល់!**\nAdmin នឹងពិនិត្យ និងឆ្លើយតបជូនលោកអ្នកឆាប់ៗ។")
+# ==========================================
+# 7. AUTO TOP-UP SYSTEM WITH BAKONG KHQR
+# ==========================================
+@bot.message_handler(func=lambda msg: msg.text == get_setting('btn_topup', '💳 បញ្ចូលលុយ (KHQR)'))
+def handle_topup_btn(message):
+    msg = bot.send_message(message.chat.id, "💵 **សូមវាយបញ្ចូលចំនួនទឹកប្រាក់ដែលចង់បញ្ចូលជា ($ USD):**\n*(ឧទាហរណ៍៖ `1.5` ឬ `5`)*", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_topup_amount)
 
-def handle_topup_request(message):
-    user_id = message.from_user.id
-    can_topup, wait_min = check_topup_cooldown(user_id)
+def process_topup_amount(message):
+    try:
+        amount = float(message.text.strip())
+        if amount <= 0:
+            bot.send_message(message.chat.id, "❌ ចំនួនទឹកប្រាក់ត្រូវតែធំជាង 0!")
+            return
 
-    if not can_topup:
+        # Generate KHQR String & MD5
+        qr_string, md5_hash = generate_khqr_data(amount)
+        if not qr_string or not md5_hash:
+            bot.send_message(message.chat.id, "❌ មានបញ្ហាក្នុងការបង្កើត KHQR Code! សូមព្យាយាមម្តងទៀត។")
+            return
+
+        # បង្កើត QR Code Image
+        qr_photo_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={qr_string}"
+
+        text = f"💳 **ការបញ្ចូលលុយតាម Bakong KHQR**\n\n"
+        text += f"💵 ចំនួនទឹកប្រាក់: **${amount:.2f}**\n"
+        text += f"🏦 គណនីទទួល: `{BAKONG_ACCOUNT_ID}`\n\n"
+        text += "📸 **សូម Scan រូប QR Code ខាងលើដើម្បីស្កេនបង់ប្រាក់តាម App ធនាគារណាក៏បាន។**\n"
+        text += "បន្ទាប់ពីបង់ប្រាក់រួចរាល់ សូមចុចប៊ូតុង **[ ✅ ខ្ញុំបានបង់ប្រាក់រួចរាល់ ]** ខាងក្រោមដើម្បីឱ្យប្រព័ន្ធបូកលុយស្វ័យប្រវត្តិ។"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("✅ ខ្ញុំបានបង់ប្រាក់រួចរាល់", callback_data=f"check_pay_{md5_hash}_{amount}"))
+
+        bot.send_photo(message.chat.id, qr_photo_url, caption=text, parse_mode="Markdown", reply_markup=markup)
+
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ សូមបញ្ចូលចំនួនទឹកប្រាក់ជាលេខឱ្យបានត្រឹមត្រូវ!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('check_pay_'))
+def handle_check_payment_callback(call):
+    parts = call.data.split('_')
+    md5_hash = parts[2]
+    amount = float(parts[3])
+    user_id = call.from_user.id
+    user_name = call.from_user.first_name
+
+    # ឆែកមើលក្រែងលោ Transaction MD5 នេះធ្លាប់បានបូកលុយរួចហើយ
+    with db_connect() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM bakong_payments WHERE md5 = ?", (md5_hash,))
+        already = cursor.fetchone()
+
+    if already and already[0] == 'SUCCESS':
+        bot.answer_callback_query(call.id, "⚠️ Transaction នេះបានបូកលុយរួចរាល់ហើយ!", show_alert=True)
+        return
+
+    # ឆែកមើលប្រព័ន្ធ Bakong API
+    is_success, pay_data = check_bakong_transaction_md5(md5_hash)
+
+    if is_success:
+        # កត់ត្រា និងបូកលុយស្វ័យប្រវត្តិ
+        with db_connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO bakong_payments (md5, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS')", (md5_hash, user_id, amount))
+            conn.commit()
+
+        update_user_balance(user_id, amount, "Auto Top-up (Bakong KHQR)")
+        new_bal = get_user_balance(user_id)
+
+        bot.answer_callback_query(call.id, "🎉 បង់ប្រាក់ជោគជ័យ!")
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+
         bot.send_message(
-            message.chat.id,
-            f"⚠️ **ប្រព័ន្ធការពារ Spam!**\n\nអ្នកអាចធ្វើការផ្ញើ Request បញ្ចូលលុយម្តងទៀតបានបន្ទាប់ពី **{wait_min} នាទី** ទៀត។",
+            call.message.chat.id,
+            f"🎉 **បញ្ចូលលុយជោគជ័យ (Auto Top-up)!**\n\n💰 ទទួលបាន: **${amount:.2f}**\n💵 សមតុល្យសរុបថ្មី: **${new_bal:.2f}**\n\nអរគុណសម្រាប់ការគាំទ្រ!",
             parse_mode="Markdown"
         )
-        return
 
-    topup_text = get_setting('topup_msg')
-    qr_photo_id = get_setting('topup_qr')
-
-    if qr_photo_id:
-        try:
-            msg = bot.send_photo(message.chat.id, qr_photo_id, caption=topup_text, parse_mode="Markdown")
-        except Exception:
-            msg = bot.send_message(message.chat.id, topup_text, parse_mode="Markdown")
+        # ផ្ញើ Alert ជូន Admin ទាំង ២ នាក់
+        notify_all_admins(
+            f"🔔 **[AUTO TOP-UP ALERT]**\n\n👤 អតិថិជន: {user_name}\n🆔 User ID: `{user_id}`\n💵 ចំនួនលុយ: **${amount:.2f}**\n🔑 MD5: `{md5_hash}`"
+        )
     else:
-        msg = bot.send_message(message.chat.id, topup_text, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, "❌ ប្រព័ន្ធមិនទាន់ទទួលបានការទូទាត់ទេ! សូមបង់ប្រាក់រួចរាល់សិន រួចចុចម្តងទៀត។", show_alert=True)
 
-    bot.register_next_step_handler(msg, process_slip_upload)
-
-def process_slip_upload(message):
-    user_id = message.from_user.id
-    if not message.photo:
-        bot.send_message(message.chat.id, "❌ សូមផ្ញើជា **រូបថត Slip**!")
-        return
-
-    update_topup_time(user_id)
-    photo_id = message.photo[-1].file_id
-    user_name = message.from_user.first_name
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("✅ យល់ព្រម (Approve)", callback_data=f"app_topup_{user_id}"),
-        types.InlineKeyboardButton("❌ បដិសេធ (Reject)", callback_data=f"rej_topup_{user_id}")
-    )
-
-    notify_all_admins(
-        text=f"📥 **មានសំណើបញ្ចូលលុយថ្មី!**\n\n👤 អ្នកផ្ញើ: {user_name}\n🆔 User ID: `{user_id}`",
-        photo_id=photo_id,
-        reply_markup=markup
-    )
-    bot.send_message(message.chat.id, "✅ **បានផ្ញើ Slip រួចរាល់!**\nសូមរង់ចាំ Admin ពិនិត្យ។")
-
+# ==========================================
+# 8. CATALOG & BUY SYSTEM
+# ==========================================
 def send_catalog_menu(chat_id):
     with db_connect() as conn:
         cursor = conn.cursor()
@@ -352,9 +401,6 @@ def send_catalog_menu(chat_id):
 
     bot.send_message(chat_id, "🛒 **សូមជ្រើសរើសប្រភេទអាខោនដែលអ្នកចង់ទិញ៖**", parse_mode="Markdown", reply_markup=markup)
 
-# ==========================================
-# 5. ITEM DETAILS, CONFIRMATION & BUY SYSTEM
-# ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('view_cat_'))
 def view_category_details(call):
     cat_id = int(call.data.split('_')[2])
@@ -370,9 +416,7 @@ def view_category_details(call):
     name, price, desc, photo_id = cat
     stock_cnt = get_stock_count(name)
 
-    text = f"📌 **ប្រភេទ៖** {name}\n"
-    text += f"💰 **តម្លៃ៖** ${price:.2f}\n"
-    text += f"📦 **ស្តុកនៅសល់៖** {stock_cnt} អាខោន\n"
+    text = f"📌 **ប្រភេទ៖** {name}\n💰 **តម្លៃ៖** ${price:.2f}\n📦 **ស្តុកនៅសល់៖** {stock_cnt} អាខោន\n"
     if desc:
         text += f"📝 **ព័ត៌មានបន្ថែម៖** {desc}\n"
 
@@ -418,11 +462,7 @@ def ask_buy_confirmation(call):
         bot.answer_callback_query(call.id, f"⚠️ លុយមិនគ្រប់គ្រាន់ទេ! អ្នកមាន ${balance:.2f} ប៉ុណ្ណោះ។", show_alert=True)
         return
 
-    text = f"⚠️ **ការបញ្ជាក់ការទិញ (Confirm Order)**\n\n"
-    text += f"📦 ទំនិញ: **{name}**\n"
-    text += f"💵 តម្លៃ: **${price:.2f}**\n"
-    text += f"💳 សមតុល្យរបស់អ្នក: **${balance:.2f}**\n\n"
-    text += "តើអ្នកប្រាកដជាចង់ទិញអាខោននេះមែនទេ?"
+    text = f"⚠️ **ការបញ្ជាក់ការទិញ (Confirm Order)**\n\n📦 ទំនិញ: **{name}**\n💵 តម្លៃ: **${price:.2f}**\n💳 សមតុល្យរបស់អ្នក: **${balance:.2f}**\n\nតើអ្នកប្រាកដជាចង់ទិញអាខោននេះមែនទេ?"
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ ប្រាកដហើយ (ទិញ)", callback_data=f"confirm_buy_{cat_id}"))
@@ -449,7 +489,6 @@ def handle_final_purchase(call):
 
     name, price = cat
     user_id = call.from_user.id
-    user_name = call.from_user.first_name
     balance = get_user_balance(user_id)
 
     if balance < price:
@@ -475,13 +514,12 @@ def handle_final_purchase(call):
         parse_mode="Markdown"
     )
 
-    # ផ្ញើ Notification ទៅកាន់ Admin ទាំង ២ នាក់
     notify_all_admins(
-        f"🔔 **[REAL-TIME ALERT] មានការទិញអាខោនថ្មី!**\n\n👤 អ្នកទិញ: {user_name}\n🆔 User ID: `{user_id}`\n📦 ប្រភេទ: {name}\n💵 តម្លៃ: ${price:.2f}\n🔑 លេខកូដ: `{item_data}`"
+        f"🔔 **[REAL-TIME ALERT] មានការទិញអាខោន!**\n\n👤 អ្នកទិញ: {call.from_user.first_name}\n🆔 User ID: `{user_id}`\n📦 ប្រភេទ: {name}\n💵 តម្លៃ: ${price:.2f}\n🔑 លេខកូដ: `{item_data}`"
     )
 
 # ==========================================
-# 6. ADMIN PANEL & MANAGEMENT
+# 9. ADMIN PANEL & MANAGEMENT
 # ==========================================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
@@ -505,111 +543,8 @@ def admin_panel(message):
         types.InlineKeyboardButton("📜 ឆែកប្រវត្តិ User", callback_data="adm_check_his"),
         types.InlineKeyboardButton("📢 ផ្ញើសារប្រកាស", callback_data="adm_broadcast")
     )
-    markup.add(types.InlineKeyboardButton("⚙️ កែប្រែ Menu & អត្ថបទ", callback_data="adm_edit_menu"))
-    markup.add(types.InlineKeyboardButton("📥 ទាញយក Database Backup", callback_data="adm_download_db"))
 
     bot.send_message(message.chat.id, "⚙️ **ផ្ទាំងគ្រប់គ្រង ADMIN**", parse_mode="Markdown", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_download_db")
-def send_database_backup(call):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        with open(DB_PATH, 'rb') as doc:
-            bot.send_document(
-                call.message.chat.id,
-                doc,
-                caption=f"📦 **Database Backup**\n🕒 កាលបរិច្ឆេទ: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        bot.send_message(call.message.chat.id, f"❌ មិនអាចទាញយក File បានទេ: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data == "adm_edit_menu")
-def admin_edit_menu_options(call):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton("🖼️ កែប្រែ/ដាក់រូប QR ABA", callback_data="setqr_topup_qr"),
-        types.InlineKeyboardButton("🏦 កែប្រែអត្ថបទធនាគារ (Topup Text)", callback_data="setkey_topup_msg"),
-        types.InlineKeyboardButton("✏️ កែប្រែប៊ូតុង 'ទិញអាខោន'", callback_data="setkey_btn_buy"),
-        types.InlineKeyboardButton("✏️ កែប្រែប៊ូតុង 'គណនីរបស់ខ្ញុំ'", callback_data="setkey_btn_profile"),
-        types.InlineKeyboardButton("✏️ កែប្រែប៊ូតុង 'បញ្ចូលលុយ'", callback_data="setkey_btn_topup"),
-        types.InlineKeyboardButton("✏️ កែប្រែប៊ូតុង 'ប្រវត្តិរបស់ខ្ញុំ'", callback_data="setkey_btn_history"),
-        types.InlineKeyboardButton("✏️ កែប្រែប៊ូតុង 'រាយការណ៍/ទាក់ទង'", callback_data="setkey_btn_support"),
-        types.InlineKeyboardButton("📝 កែប្រែសារ Welcome Message", callback_data="setkey_welcome_msg")
-    )
-    bot.send_message(call.message.chat.id, "🛠 **សូមជ្រើសរើសផ្នែកដែលត្រូវកែប្រែ៖**", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('setkey_'))
-def handle_setkey_prompt(call):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-
-    key_name = call.data.replace('setkey_', '')
-    current_val = get_setting(key_name)
-
-    msg = bot.send_message(
-        call.message.chat.id,
-        f"📝 **តម្លៃបច្ចុប្បន្ន៖**\n`{current_val}`\n\nសូមផ្ញើ **អត្ថបទថ្មី** ដែលអ្នកចង់ជំនួស៖",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, process_update_setting, key_name)
-
-def process_update_setting(message, key_name):
-    new_val = message.text.strip()
-    set_setting(key_name, new_val)
-    bot.send_message(message.chat.id, f"✅ បានកែប្រែ **{key_name}** ដោយជោគជ័យ!", parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data == "setqr_topup_qr")
-def handle_setqr_prompt(call):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-
-    msg = bot.send_message(
-        call.message.chat.id,
-        "🖼️ **សូមផ្ញើរូបថត (Photo) QR Code ABA ថ្មីរបស់អ្នក៖**\n*(ដើម្បីឱ្យប្រព័ន្ធបង្ហាញរូបនេះពេលអតិថិជនចុច 'បញ្ចូលលុយ')*",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, process_update_qr)
-
-def process_update_qr(message):
-    if not message.photo:
-        bot.send_message(message.chat.id, "❌ សូមផ្ញើជា **រូបថត (Photo)**!")
-        return
-
-    photo_id = message.photo[-1].file_id
-    set_setting('topup_qr', photo_id)
-    bot.send_message(message.chat.id, "✅ **បានប្តូររូប QR Code ABA ដោយជោគជ័យ!**", parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('app_topup_', 'rej_topup_')))
-def handle_slip_approval(call):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-
-    action = call.data.split('_')[0]
-    target_user = int(call.data.split('_')[2])
-
-    if action == "rej":
-        bot.answer_callback_query(call.id, "បានបដិសេធ!", show_alert=True)
-        bot.edit_message_caption("❌ **បានបដិសេធ Slip នេះរួចរាល់!**", call.message.chat.id, call.message.message_id)
-        bot.send_message(target_user, "❌ **សំណើបញ្ចូលលុយរបស់អ្នកត្រូវបានបដិសេធ!**\nសូមពិនិត្យមើល Slip ឡើងវិញ ឬទាក់ទង Admin។")
-    elif action == "app":
-        msg = bot.send_message(call.message.chat.id, f"សូមវាយ **ចំនួនលុយ ($)** ដែលត្រូវបញ្ចូលឱ្យ User ID `{target_user}` (ឧ. `5.0`)៖", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_approve_amount, target_user)
-
-def process_approve_amount(message, target_user):
-    try:
-        amount = float(message.text.strip())
-        update_user_balance(target_user, amount, "បញ្ចូលលុយតាម Slip (Approved)")
-        new_bal = get_user_balance(target_user)
-
-        bot.send_message(message.chat.id, f"✅ បានបញ្ចូលលុយ **${amount:.2f}** ឱ្យ ID `{target_user}` រួចរាល់!\nសមតុល្យថ្មី: **${new_bal:.2f}**", parse_mode="Markdown")
-        bot.send_message(target_user, f"🎉 **បញ្ចូលលុយជោគជ័យ!**\n\n💰 ទទួលបាន: **${amount:.2f}**\n💵 សមតុល្យសរុប: **${new_bal:.2f}**", parse_mode="Markdown")
-    except Exception:
-        bot.send_message(message.chat.id, "❌ ចំនួនលុយមិនត្រឹមត្រូវ!")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('adm_'))
 def handle_admin_actions(call):
@@ -617,7 +552,7 @@ def handle_admin_actions(call):
         return
 
     if call.data == "adm_add_cat":
-        msg = bot.send_message(call.message.chat.id, "សូមវាយ **ឈ្មោះប្រភេទទំនិញ** (ឧទាហរណ៍៖ `Telegram_US`)", parse_mode="Markdown")
+        msg = bot.send_message(call.message.chat.id, "សូមវាយ **ឈ្មោះប្រភេទទំនិញ** (ឧ. `Blox_Fruit_Acc`)", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_cat_name)
 
     elif call.data == "adm_add_stock":
@@ -656,66 +591,38 @@ def handle_admin_actions(call):
             cursor.execute("SELECT COUNT(*) FROM stock WHERE is_sold = 0")
             active_cnt = cursor.fetchone()[0]
 
-        stats_text = f"📊 **របាយការណ៍ហាងបច្ចុប្បន្ន**\n\n"
-        stats_text += f"👥 អតិថិជនសរុប: **{u_cnt} នាក់**\n"
-        stats_text += f"✅ លក់ដាច់សរុប: **{sold_cnt} អាខោន**\n"
-        stats_text += f"📦 ស្តុកនៅសល់សរុប: **{active_cnt} អាខោន**\n"
+        stats_text = f"📊 **របាយការណ៍ហាងបច្ចុប្បន្ន**\n\n👥 អតិថិជនសរុប: **{u_cnt} នាក់**\n✅ លក់ដាច់សរុប: **{sold_cnt} អាខោន**\n📦 ស្តុកនៅសល់សរុប: **{active_cnt} អាខោន**\n"
         bot.send_message(call.message.chat.id, stats_text, parse_mode="Markdown")
 
     elif call.data in ["adm_add_bal", "adm_sub_bal"]:
         is_add = (call.data == "adm_add_bal")
-        msg = bot.send_message(call.message.chat.id, f"សូមផ្ញើ ID និង ចំនួនលុយ (ឧទាហរណ៍៖ `123456789 10`)", parse_mode="Markdown")
+        msg = bot.send_message(call.message.chat.id, f"សូមផ្ញើ ID និង ចំនួនលុយ (ឧ. `123456789 10`)", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_admin_balance, is_add)
 
     elif call.data == "adm_check_his":
-        msg = bot.send_message(call.message.chat.id, "សូមផ្ញើ User ID ដើម្បីឆែកមើលប្រវត្តិ (ឧទាហរណ៍៖ `123456789`)")
+        msg = bot.send_message(call.message.chat.id, "សូមផ្ញើ User ID ដើម្បីឆែកមើលប្រវត្តិ (ឧ. `123456789`)")
         bot.register_next_step_handler(msg, process_admin_history)
 
     elif call.data == "adm_broadcast":
         msg = bot.send_message(call.message.chat.id, "សូមផ្ញើសារ ឬ រូបភាពដែលត្រូវប្រកាសទៅកាន់ User ទាំងអស់៖")
         bot.register_next_step_handler(msg, process_admin_broadcast)
 
-def process_admin_history(message):
-    try:
-        uid = int(message.text.strip())
-        with db_connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT action, amount, item_data, timestamp FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 10", (uid,))
-            his = cursor.fetchall()
-            
-        if not his:
-            bot.send_message(message.chat.id, f"មិនមានប្រវត្តិសម្រាប់ ID `{uid}` ទេ!", parse_mode="Markdown")
-            return
-            
-        txt = f"📜 **ប្រវត្តិប្រតិបត្តិការរបស់ User ID `{uid}`:**\n\n"
-        for act, amt, item_data, tm in his:
-            symbol = "🟢" if amt > 0 else "🔴"
-            txt += f"{symbol} **{act}** (${amt:.2f})\n"
-            txt += f"🕒 ពេល: `{tm[:16]}`\n"
-            if item_data:
-                txt += f"🔑 **ទិន្នន័យអាខោន/លេខកូដ:** `{item_data}`\n"
-            txt += "-------------------------------\n"
-            
-        bot.send_message(message.chat.id, txt, parse_mode="Markdown")
-    except Exception:
-        bot.send_message(message.chat.id, "❌ ID មិនត្រឹមត្រូវ!")
-
 def process_cat_name(message):
     cat_name = message.text.strip()
-    msg = bot.send_message(message.chat.id, f"បញ្ចូល **តម្លៃ ($)** សម្រាប់ {cat_name} (ឧទាហរណ៍៖ `2.5`)", parse_mode="Markdown")
+    msg = bot.send_message(message.chat.id, f"បញ្ចូល **តម្លៃ ($)** សម្រាប់ {cat_name} (ឧ. `2.5`)", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_cat_price, cat_name)
 
 def process_cat_price(message, cat_name):
     try:
         price = float(message.text.strip())
-        msg = bot.send_message(message.chat.id, "បញ្ចូល **ព័ត៌មានបន្ថែម/ការធានា** (ឬវាយ `skip` ដើម្បីរំលង)៖", parse_mode="Markdown")
+        msg = bot.send_message(message.chat.id, "បញ្ចូល **ព័ត៌មានបន្ថែម** (ឬវាយ `skip` ដើម្បីរំលង)៖", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_cat_desc, cat_name, price)
     except Exception:
         bot.send_message(message.chat.id, "❌ តម្លៃមិនត្រឹមត្រូវ!")
 
 def process_cat_desc(message, cat_name, price):
     desc = None if message.text and message.text.lower() == 'skip' else message.text
-    msg = bot.send_message(message.chat.id, "សូម **ផ្ញើរូបភាព (Photo)** សម្រាប់ប្រភេទទំនិញនេះ (ឬវាយ `skip` បើមិនដាក់រូប)៖")
+    msg = bot.send_message(message.chat.id, "សូម **ផ្ញើរូបភាព (Photo)** សម្រាប់ទំនិញ (ឬវាយ `skip` បើមិនដាក់)៖")
     bot.register_next_step_handler(msg, process_cat_photo, cat_name, price, desc)
 
 def process_cat_photo(message, cat_name, price, desc):
@@ -775,7 +682,32 @@ def process_admin_balance(message, is_add):
         new_b = get_user_balance(uid)
         bot.send_message(message.chat.id, f"✅ រួចរាល់! សមតុល្យថ្មីរបស់ `{uid}` គឺ **${new_b:.2f}**", parse_mode="Markdown")
     except Exception:
-        bot.send_message(message.chat.id, "❌ ខុសទម្រង់! (ឧទាហរណ៍៖ `123456789 10`)")
+        bot.send_message(message.chat.id, "❌ ខុសទម្រង់! (ឧ. `123456789 10`)")
+
+def process_admin_history(message):
+    try:
+        uid = int(message.text.strip())
+        with db_connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT action, amount, item_data, timestamp FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 10", (uid,))
+            his = cursor.fetchall()
+            
+        if not his:
+            bot.send_message(message.chat.id, f"មិនមានប្រវត្តិសម្រាប់ ID `{uid}` ទេ!", parse_mode="Markdown")
+            return
+            
+        txt = f"📜 **ប្រវត្តិរបស់ User ID `{uid}`:**\n\n"
+        for act, amt, item_data, tm in his:
+            symbol = "🟢" if amt > 0 else "🔴"
+            txt += f"{symbol} **{act}** (${amt:.2f})\n"
+            txt += f"🕒 ពេល: `{tm[:16]}`\n"
+            if item_data:
+                txt += f"🔑 **ទិន្នន័យ:** `{item_data}`\n"
+            txt += "-------------------------------\n"
+            
+        bot.send_message(message.chat.id, txt, parse_mode="Markdown")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ ID មិនត្រឹមត្រូវ!")
 
 def process_admin_broadcast(message):
     with db_connect() as conn:
@@ -794,13 +726,25 @@ def process_admin_broadcast(message):
     bot.send_message(message.chat.id, f"📢 **ប្រកាសរួចរាល់!**\n\n✅ ជោគជ័យ: {success} នាក់\n❌ បរាជ័យ: {failed} នាក់", parse_mode="Markdown")
 
 # ==========================================
-# 7. BOT EXECUTION LOOP
+# 10. BOT EXECUTION LOOP
 # ==========================================
 if __name__ == '__main__':
-    print("🚀 Bot is running...")
+    # 1. Start Flask Web Server
+    server_thread = threading.Thread(target=run_web_server)
+    server_thread.daemon = True
+    server_thread.start()
+
+    # 2. Clear Webhook to prevent Conflict Error 409
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception as e:
+        print(f"Webhook clear status: {e}")
+
+    print("🚀 Bot is running with Auto Top-up...")
     while True:
         try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+            bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
         except Exception as e:
             print(f"❌ Connection error: {e}")
             time.sleep(5)
